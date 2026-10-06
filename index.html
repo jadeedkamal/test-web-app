@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Background Remover</title>
+  <meta name="description" content="Remove image backgrounds right in your browser. Images never leave your device." />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Background Remover</h1>
+    <p class="tagline">Runs entirely in your browser — your images are never uploaded.</p>
+  </header>
+
+  <main class="layout">
+    <section class="stage" id="stage">
+      <div class="dropzone" id="dropzone">
+        <div class="dropzone-inner">
+          <svg width="48" height="48" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19 13v6H5v-6H3v6a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6h-2Zm-6-9.17 3.59 3.58L18 6l-6-6-6 6 1.41 1.41L11 3.83V16h2V3.83Z"/></svg>
+          <p><strong>Drop an image here</strong>, paste it (Ctrl/⌘+V), or</p>
+          <label class="btn primary">
+            Choose image
+            <input type="file" id="fileInput" accept="image/*" hidden />
+          </label>
+          <p class="hint">PNG, JPG, WebP…</p>
+        </div>
+      </div>
+
+      <div class="canvas-wrap" id="canvasWrap" hidden>
+        <canvas id="view"></canvas>
+        <div class="split-handle" id="splitHandle" hidden><span></span></div>
+        <div class="brush-cursor" id="brushCursor" hidden></div>
+      </div>
+
+      <div class="busy" id="busy" hidden>
+        <div class="spinner"></div>
+        <p id="busyText">Working…</p>
+        <progress id="busyProgress" max="1" value="0"></progress>
+      </div>
+    </section>
+
+    <aside class="panel" id="panel">
+      <fieldset disabled id="controls">
+        <div class="group">
+          <h2>1. Remove background</h2>
+          <label class="field">
+            <span>Quality</span>
+            <select id="model">
+              <option value="isnet_quint8">Fast (smaller download)</option>
+              <option value="isnet_fp16" selected>Balanced</option>
+              <option value="isnet">Best (largest download)</option>
+            </select>
+          </label>
+          <button class="btn primary wide" id="aiBtn">✨ Remove background (AI)</button>
+          <p class="hint">First run downloads the AI model (~40–170 MB), then it's cached.</p>
+        </div>
+
+        <div class="group">
+          <h2>2. Refine</h2>
+          <div class="tools" role="radiogroup" aria-label="Tool">
+            <button class="tool active" data-tool="none" title="Pan / view (no edits)">👁 View</button>
+            <button class="tool" data-tool="erase" title="Paint to remove">🧽 Erase</button>
+            <button class="tool" data-tool="restore" title="Paint to bring back">🖌 Restore</button>
+            <button class="tool" data-tool="wand" title="Click a color to remove it">🪄 Color</button>
+          </div>
+          <label class="field" data-for="brush">
+            <span>Brush size <output id="brushSizeOut">40</output></span>
+            <input type="range" id="brushSize" min="2" max="300" value="40" />
+          </label>
+          <label class="field" data-for="brush">
+            <span>Brush softness <output id="brushSoftOut">50%</output></span>
+            <input type="range" id="brushSoft" min="0" max="100" value="50" />
+          </label>
+          <label class="field" data-for="wand">
+            <span>Color tolerance <output id="toleranceOut">30</output></span>
+            <input type="range" id="tolerance" min="1" max="150" value="30" />
+          </label>
+          <label class="check" data-for="wand">
+            <input type="checkbox" id="contiguous" checked /> Only connected area
+          </label>
+          <div class="row">
+            <button class="btn" id="undoBtn" title="Ctrl/⌘+Z">↶ Undo</button>
+            <button class="btn" id="redoBtn" title="Ctrl/⌘+Shift+Z">↷ Redo</button>
+            <button class="btn" id="resetBtn">Reset</button>
+          </div>
+        </div>
+
+        <div class="group">
+          <h2>3. Background</h2>
+          <div class="swatches" id="swatches">
+            <button class="swatch checker active" data-bg="transparent" title="Transparent"></button>
+            <button class="swatch" data-bg="#ffffff" style="background:#ffffff" title="White"></button>
+            <button class="swatch" data-bg="#000000" style="background:#000000" title="Black"></button>
+            <button class="swatch" data-bg="#e8f0fe" style="background:#e8f0fe" title="Light blue"></button>
+            <button class="swatch" data-bg="#fde2e4" style="background:#fde2e4" title="Pink"></button>
+            <label class="swatch custom" title="Custom color">
+              <input type="color" id="customColor" value="#4caf50" />
+            </label>
+          </div>
+          <label class="btn wide">
+            Use an image as background
+            <input type="file" id="bgImageInput" accept="image/*" hidden />
+          </label>
+          <label class="check">
+            <input type="checkbox" id="compare" /> Compare with original (drag the divider)
+          </label>
+        </div>
+
+        <div class="group">
+          <h2>4. Export</h2>
+          <label class="field">
+            <span>Format</span>
+            <select id="format">
+              <option value="image/png">PNG (keeps transparency)</option>
+              <option value="image/webp">WebP (keeps transparency)</option>
+              <option value="image/jpeg">JPG (no transparency)</option>
+            </select>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="trim" /> Trim empty space around subject
+          </label>
+          <button class="btn primary wide" id="downloadBtn">⬇ Download</button>
+          <button class="btn wide" id="copyBtn">Copy to clipboard</button>
+          <button class="btn wide ghost" id="newBtn">Start over with a new image</button>
+        </div>
+      </fieldset>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    AI segmentation by <a href="https://github.com/imgly/background-removal-js" target="_blank" rel="noopener">@imgly/background-removal</a>.
+  </footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
