@@ -53,7 +53,17 @@
             </select>
           </label>
           <button class="btn primary wide" id="aiBtn">✨ Remove background (AI)</button>
-          <p class="hint">First run downloads the AI model (~40–170 MB), then it's cached.</p>
+          <p class="hint">Best for photos of people, products, animals. First run downloads the AI model (~40–170 MB), then it's cached.</p>
+          <div class="or"><span>or</span></div>
+          <button class="btn wide" id="extractBtn">🔤 Extract text &amp; graphics</button>
+          <p class="hint">Best for screenshots, logos, stats cards and text on a plain or gradient background. Keeps soft edges without a dark/light halo.</p>
+          <label class="field" style="margin-top:10px">
+            <span>Background cleanup <output id="cleanupOut">6%</output></span>
+            <input type="range" id="cleanup" min="0" max="40" value="6" />
+          </label>
+          <label class="check">
+            <input type="checkbox" id="cleanEdges" checked /> Clean edge colors (remove halo)
+          </label>
         </div>
 
         <div class="group">

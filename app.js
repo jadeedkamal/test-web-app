@@ -19,6 +19,10 @@ const els = {
   controls: $("controls"),
   model: $("model"),
   aiBtn: $("aiBtn"),
+  extractBtn: $("extractBtn"),
+  cleanup: $("cleanup"),
+  cleanupOut: $("cleanupOut"),
+  cleanEdges: $("cleanEdges"),
   brushSize: $("brushSize"),
   brushSizeOut: $("brushSizeOut"),
   brushSoft: $("brushSoft"),
@@ -52,6 +56,7 @@ const state = {
   result: null, // canvas: source RGB + mask alpha
   resultCtx: null,
   resultData: null, // ImageData backing `result`
+  bgMap: null, // estimated background RGB per pixel, used to clean edge colors
   history: [],
   historyIndex: -1,
   tool: "none",
@@ -111,6 +116,7 @@ async function loadImageFile(file) {
   state.original = original;
   state.pixels = octx.getImageData(0, 0, w, h).data;
   state.mask = new Uint8ClampedArray(w * h).fill(255);
+  state.bgMap = null;
 
   state.result = document.createElement("canvas");
   state.result.width = w;
@@ -159,15 +165,247 @@ function refreshResult(x0 = 0, y0 = 0, x1 = state.w, y1 = state.h) {
   y1 = Math.min(state.h, Math.ceil(y1));
   if (x1 <= x0 || y1 <= y0) return;
   const { w, mask, pixels } = state;
+  const bg = els.cleanEdges.checked ? state.bgMap : null;
   const out = state.resultData.data;
   for (let y = y0; y < y1; y++) {
     let i = y * w + x0;
     for (let x = x0; x < x1; x++, i++) {
+      const p = i * 4;
+      const m = mask[i];
+      if (bg && m > 0 && m < 255) {
+        // Edge pixels are a blend of foreground and background: P = a·F + (1−a)·B.
+        // Solve for F so semi-transparent edges don't keep the old background's color (halo).
+        const a = m / 255;
+        const ia = 1 - a;
+        const b = i * 3;
+        out[p] = (pixels[p] - ia * bg[b]) / a;
+        out[p + 1] = (pixels[p + 1] - ia * bg[b + 1]) / a;
+        out[p + 2] = (pixels[p + 2] - ia * bg[b + 2]) / a;
+      } else {
+        out[p] = pixels[p];
+        out[p + 1] = pixels[p + 1];
+        out[p + 2] = pixels[p + 2];
+      }
       // combine with the source alpha so already-transparent PNGs stay transparent
-      out[i * 4 + 3] = (pixels[i * 4 + 3] * mask[i]) / 255;
+      out[p + 3] = (pixels[p + 3] * m) / 255;
     }
   }
   state.resultCtx.putImageData(state.resultData, 0, 0, x0, y0, x1 - x0, y1 - y0);
+}
+
+// ---------- background estimation ----------
+
+// Estimates the background color at every pixel (returns RGB, 3 bytes per pixel).
+// Works on a coarse grid of blocks, so smooth gradients are handled.
+//   isBackground(i): optional — only pixels it accepts are used (e.g. where the AI mask is ~0).
+//   Without it, all pixels are used and a wide median filter rejects blocks covered by content.
+function estimateBackground(isBackground) {
+  const { w, h, pixels } = state;
+  const S = Math.max(6, Math.round(Math.max(w, h) / 200));
+  const gw = Math.ceil(w / S);
+  const gh = Math.ceil(h / S);
+  const n = gw * gh;
+  let grid = new Float32Array(n * 3);
+  let valid = new Uint8Array(n);
+  const lum = (p) => pixels[p] * 0.299 + pixels[p + 1] * 0.587 + pixels[p + 2] * 0.114;
+
+  // 1. per-block median color (by luminance)
+  const cand = [];
+  for (let gy = 0; gy < gh; gy++) {
+    for (let gx = 0; gx < gw; gx++) {
+      cand.length = 0;
+      for (let y = gy * S; y < Math.min(h, (gy + 1) * S); y++) {
+        for (let x = gx * S; x < Math.min(w, (gx + 1) * S); x++) {
+          const i = y * w + x;
+          if (!isBackground || isBackground(i)) cand.push(i * 4);
+        }
+      }
+      if (cand.length < (isBackground ? 3 : 1)) continue;
+      cand.sort((a, b) => lum(a) - lum(b));
+      const p = cand[cand.length >> 1];
+      const g = gy * gw + gx;
+      grid[g * 3] = pixels[p];
+      grid[g * 3 + 1] = pixels[p + 1];
+      grid[g * 3 + 2] = pixels[p + 2];
+      valid[g] = 1;
+    }
+  }
+
+  const gLum = (g, src) => src[g * 3] * 0.299 + src[g * 3 + 1] * 0.587 + src[g * 3 + 2] * 0.114;
+
+  if (!isBackground) {
+    // 2a. wide median filter: text/graphics only cover a minority of a large window
+    const R = 10;
+    const src = grid;
+    grid = new Float32Array(n * 3);
+    const win = [];
+    for (let gy = 0; gy < gh; gy++) {
+      for (let gx = 0; gx < gw; gx++) {
+        win.length = 0;
+        for (let yy = Math.max(0, gy - R); yy <= Math.min(gh - 1, gy + R); yy++) {
+          for (let xx = Math.max(0, gx - R); xx <= Math.min(gw - 1, gx + R); xx++) win.push(yy * gw + xx);
+        }
+        win.sort((a, b) => gLum(a, src) - gLum(b, src));
+        const m = win[win.length >> 1];
+        const g = gy * gw + gx;
+        grid[g * 3] = src[m * 3];
+        grid[g * 3 + 1] = src[m * 3 + 1];
+        grid[g * 3 + 2] = src[m * 3 + 2];
+      }
+    }
+  } else {
+    // 2b. fill blocks with no background pixels from their neighbours
+    if (!valid.some(Boolean)) return null;
+    let missing = valid.reduce((s, v) => s + (v ? 0 : 1), 0);
+    while (missing > 0) {
+      const next = valid.slice();
+      for (let gy = 0; gy < gh; gy++) {
+        for (let gx = 0; gx < gw; gx++) {
+          const g = gy * gw + gx;
+          if (valid[g]) continue;
+          let r = 0, gg = 0, b = 0, c = 0;
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]) {
+            const xx = gx + dx, yy = gy + dy;
+            if (xx < 0 || yy < 0 || xx >= gw || yy >= gh) continue;
+            const k = yy * gw + xx;
+            if (!valid[k]) continue;
+            r += grid[k * 3]; gg += grid[k * 3 + 1]; b += grid[k * 3 + 2]; c++;
+          }
+          if (c) {
+            grid[g * 3] = r / c; grid[g * 3 + 1] = gg / c; grid[g * 3 + 2] = b / c;
+            next[g] = 1;
+            missing--;
+          }
+        }
+      }
+      valid = next;
+    }
+  }
+
+  // 3. light smoothing (two 3×3 box blurs)
+  for (let pass = 0; pass < 2; pass++) {
+    const src = grid;
+    grid = new Float32Array(n * 3);
+    for (let gy = 0; gy < gh; gy++) {
+      for (let gx = 0; gx < gw; gx++) {
+        let r = 0, gg = 0, b = 0, c = 0;
+        for (let yy = Math.max(0, gy - 1); yy <= Math.min(gh - 1, gy + 1); yy++) {
+          for (let xx = Math.max(0, gx - 1); xx <= Math.min(gw - 1, gx + 1); xx++) {
+            const k = yy * gw + xx;
+            r += src[k * 3]; gg += src[k * 3 + 1]; b += src[k * 3 + 2]; c++;
+          }
+        }
+        const g = gy * gw + gx;
+        grid[g * 3] = r / c; grid[g * 3 + 1] = gg / c; grid[g * 3 + 2] = b / c;
+      }
+    }
+  }
+
+  // 4. bilinear upsample to full resolution
+  const out = new Uint8ClampedArray(w * h * 3);
+  for (let y = 0; y < h; y++) {
+    const fy = Math.min(gh - 1, Math.max(0, (y + 0.5) / S - 0.5));
+    const y0 = Math.floor(fy), y1 = Math.min(gh - 1, y0 + 1), ty = fy - y0;
+    for (let x = 0; x < w; x++) {
+      const fx = Math.min(gw - 1, Math.max(0, (x + 0.5) / S - 0.5));
+      const x0 = Math.floor(fx), x1 = Math.min(gw - 1, x0 + 1), tx = fx - x0;
+      const a = (y0 * gw + x0) * 3, b = (y0 * gw + x1) * 3, c = (y1 * gw + x0) * 3, d = (y1 * gw + x1) * 3;
+      const o = (y * w + x) * 3;
+      for (let ch = 0; ch < 3; ch++) {
+        const top = grid[a + ch] + (grid[b + ch] - grid[a + ch]) * tx;
+        const bot = grid[c + ch] + (grid[d + ch] - grid[c + ch]) * tx;
+        out[o + ch] = top + (bot - top) * ty;
+      }
+    }
+  }
+  return out;
+}
+
+// Keep faint (< 50%) pixels only within `r` px of solid content. Real anti-aliased edges always
+// touch solid pixels; isolated faint specks are compression noise.
+function despeckle(mask, r) {
+  const { w, h } = state;
+  const near = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    let last = -Infinity;
+    for (let x = 0; x < w; x++) {
+      if (mask[y * w + x] >= 128) last = x;
+      if (x - last <= r) near[y * w + x] = 1;
+    }
+    last = Infinity;
+    for (let x = w - 1; x >= 0; x--) {
+      if (mask[y * w + x] >= 128) last = x;
+      if (last - x <= r) near[y * w + x] = 1;
+    }
+  }
+  const near2 = new Uint8Array(w * h);
+  for (let x = 0; x < w; x++) {
+    let last = -Infinity;
+    for (let y = 0; y < h; y++) {
+      if (near[y * w + x]) last = y;
+      if (y - last <= r) near2[y * w + x] = 1;
+    }
+    last = Infinity;
+    for (let y = h - 1; y >= 0; y--) {
+      if (near[y * w + x]) last = y;
+      if (last - y <= r) near2[y * w + x] = 1;
+    }
+  }
+  for (let i = 0; i < mask.length; i++) if (mask[i] < 128 && !near2[i]) mask[i] = 0;
+}
+
+// "Color to alpha" against the estimated background: each pixel gets the lowest alpha that
+// can explain it as foreground over that background. Ideal for text, logos, charts, screenshots.
+function extractGraphics() {
+  if (!state.original || state.busy) return;
+  setBusy(true, "Separating text & graphics…");
+  // let the overlay paint before the heavy synchronous work
+  setTimeout(() => {
+    try {
+      const { pixels, mask } = state;
+      // Pass 1: rough estimate. Pass 2: re-estimate using only pixels that clearly look like
+      // background, so dense/bold text can't pull the estimate toward its own color.
+      let bg = estimateBackground(null);
+      for (let pass = 0; pass < 2; pass++) {
+        const rough = bg;
+        bg =
+          estimateBackground((i) => {
+            const p = i * 4, b = i * 3;
+            return (
+              Math.abs(pixels[p] - rough[b]) < 14 &&
+              Math.abs(pixels[p + 1] - rough[b + 1]) < 14 &&
+              Math.abs(pixels[p + 2] - rough[b + 2]) < 14
+            );
+          }) || rough;
+      }
+      const cut = Number(els.cleanup.value) / 100;
+      for (let i = 0; i < mask.length; i++) {
+        const p = i * 4, b = i * 3;
+        let a = 0;
+        for (let c = 0; c < 3; c++) {
+          const P = pixels[p + c], B = bg[b + c];
+          const t = P > B ? (P - B) / (255 - B || 1) : P < B ? (B - P) / (B || 1) : 0;
+          if (t > a) a = t;
+        }
+        // drop faint noise / JPEG artifacts in the background; keep real alpha above it so
+        // edge colors can be recovered exactly
+        if (a < cut) a = 0;
+        mask[i] = Math.min(255, Math.round(a * 255));
+      }
+      despeckle(mask, 2);
+      state.bgMap = bg;
+      els.cleanEdges.checked = true;
+      commit();
+      refreshResult();
+      render();
+      setStatus("Done! Adjust “Background cleanup” and re-run if faint specks or edges remain.");
+    } catch (err) {
+      console.error(err);
+      setStatus(`Extraction failed: ${err?.message || err}`, true);
+    } finally {
+      setBusy(false);
+    }
+  }, 30);
 }
 
 // ---------- rendering ----------
@@ -298,6 +536,7 @@ async function runAI() {
     bmp.close?.();
     const data = cctx.getImageData(0, 0, state.w, state.h).data;
     for (let i = 0; i < state.mask.length; i++) state.mask[i] = data[i * 4 + 3];
+    state.bgMap = estimateBackground((i) => state.mask[i] < 16);
     commit();
     refreshResult();
     render();
@@ -437,6 +676,7 @@ function colorRemove(px, py) {
       if (y < h - 1 && !seen[i + w]) { seen[i + w] = 1; stack.push(i + w); }
     }
   }
+  state.bgMap = estimateBackground((i) => mask[i] < 16);
   commit();
   refreshResult();
   render();
@@ -601,6 +841,12 @@ document.addEventListener("paste", (e) => {
 });
 
 els.aiBtn.addEventListener("click", runAI);
+els.extractBtn.addEventListener("click", extractGraphics);
+els.cleanEdges.addEventListener("change", () => {
+  if (!state.original) return;
+  refreshResult();
+  render();
+});
 
 for (const b of document.querySelectorAll(".tool")) {
   b.addEventListener("click", () => setTool(b.dataset.tool));
@@ -610,8 +856,9 @@ const syncOutputs = () => {
   els.brushSizeOut.textContent = els.brushSize.value;
   els.brushSoftOut.textContent = `${els.brushSoft.value}%`;
   els.toleranceOut.textContent = els.tolerance.value;
+  els.cleanupOut.textContent = `${els.cleanup.value}%`;
 };
-[els.brushSize, els.brushSoft, els.tolerance].forEach((i) => i.addEventListener("input", syncOutputs));
+[els.brushSize, els.brushSoft, els.tolerance, els.cleanup].forEach((i) => i.addEventListener("input", syncOutputs));
 
 els.undoBtn.addEventListener("click", undo);
 els.redoBtn.addEventListener("click", redo);

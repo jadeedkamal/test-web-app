@@ -5,6 +5,8 @@ A web tool that removes image backgrounds directly in the browser. Images are ne
 ## Features
 
 - **AI background removal** using [@imgly/background-removal](https://github.com/imgly/background-removal-js) (ONNX model running in the browser via WebAssembly). Three quality levels; the model is downloaded on first use and cached by the browser.
+- **Extract text & graphics** — for screenshots, logos, stats cards and text on a plain or gradient background. Estimates the background color everywhere (handles gradients), then separates foreground with true partial transparency, so anti-aliased edges stay smooth without a dark/light halo.
+- **Clean edge colors** — removes the leftover background tint (halo) from semi-transparent edge pixels.
 - **Color tool** — click a color to remove it (great for solid/studio backgrounds), with tolerance and an "only connected area" option. Works without downloading the AI model.
 - **Erase / Restore brushes** with adjustable size and softness to touch up edges (`[` / `]` change brush size).
 - **Undo / Redo** (`Ctrl/⌘+Z`, `Ctrl/⌘+Shift+Z`).

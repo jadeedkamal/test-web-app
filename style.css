@@ -180,6 +180,8 @@ select {
 .btn.ghost { background: transparent; }
 .btn.wide { width: 100%; margin-top: 8px; }
 .row { display: flex; gap: 6px; }
+.or { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; color: var(--muted); font-size: 12.5px; }
+.or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .row .btn { flex: 1; padding: 7px 6px; }
 
 .tools { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-bottom: 12px; }
